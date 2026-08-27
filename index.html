@@ -215,6 +215,55 @@
   .hint { margin-top: 14px; text-align: center; font-size: 0.78rem; color: #a7aec0; }
   input[type="file"] { display: none; }
 
+  /* ---- AI 学习规划 ---- */
+  .ai-card { margin-top: 16px; border-top: 1px solid #f0f2f8; padding-top: 2px; }
+  .ai-head {
+    padding: 10px 2px 4px;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-weight: 700; font-size: 0.95rem; color: #4a5060;
+  }
+  .ai-settings { margin: 4px 0 10px; font-size: 0.85rem; }
+  .ai-settings summary { cursor: pointer; color: #8a93a8; padding: 4px 2px; }
+  .ai-settings summary:hover { color: #4f6ef7; }
+  .ai-settings-body { margin-top: 8px; }
+  #aiKey {
+    width: 100%; padding: 11px 12px; font-size: 0.92rem;
+    border: 1.5px solid #e2e6f2; border-radius: 12px;
+    background: #fafbfe; outline: none;
+  }
+  #aiKey:focus { border-color: #4f6ef7; background: #fff; }
+  .ai-goal { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 6px; }
+  .ai-goal input {
+    flex: 1 1 55%; min-width: 0;
+    padding: 12px 14px; font-size: 0.95rem;
+    border: 1.5px solid #e2e6f2; border-radius: 12px;
+    background: #fafbfe; outline: none;
+  }
+  .ai-goal input:focus { border-color: #4f6ef7; background: #fff; }
+  #aiGen { flex: 1 1 auto; white-space: normal; }
+  .ai-status { min-height: 1.3em; font-size: 0.82rem; color: #6a7390; margin: 2px 2px 6px; }
+  .ai-status.ok { color: #2f9e86; }
+  .ai-status.warn { color: #c07a12; }
+  .ai-status.err { color: #d64545; }
+  .ai-task {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 6px; border-bottom: 1px dashed #eef0f6;
+    animation: pop 0.2s ease;
+  }
+  .ai-task-text { flex: 1; min-width: 0; font-size: 0.92rem; word-break: break-all; }
+  .ai-add-one {
+    flex: none; border: none; border-radius: 999px;
+    background: #eef1fa; color: #4f6ef7; font-size: 0.78rem; font-weight: 600;
+    padding: 6px 12px; cursor: pointer;
+  }
+  .ai-add-one:disabled { background: #eef7f0; color: #2f9e86; }
+  .ai-add-all {
+    margin: 10px 2px 0; width: 100%;
+    padding: 10px; border: 1.5px solid #4f6ef7; border-radius: 12px;
+    background: #fff; color: #4f6ef7; font-size: 0.88rem; font-weight: 600; cursor: pointer;
+  }
+  .ai-add-all:hover { background: #f3f6ff; }
+
   /* ---- 小屏适配：防止文字跑出边框、被截断 ---- */
   @media (max-width: 400px) {
     body { padding: 14px 10px; }
@@ -226,6 +275,7 @@
     button.add { flex: 1 1 auto; }
     .toolbar button { flex: 1 1 44%; font-size: 0.8rem; padding: 9px 6px; }
     .text { font-size: 0.92rem; }
+    .ai-goal input { flex: 1 1 100%; }
   }
 </style>
 </head>
@@ -270,6 +320,23 @@
       <input id="opacityRange" type="range" min="25" max="100" step="1" value="93">
       <span class="op-val" id="opVal">93%</span>
     </div>
+
+    <section class="ai-card" id="aiCard">
+      <div class="ai-head">🤖 AI 学习规划</div>
+      <details class="ai-settings" id="aiSettings">
+        <summary>🔑 AI 设置（Key 填一次即可，只存本机浏览器）</summary>
+        <div class="ai-settings-body">
+          <input id="aiKey" type="password" placeholder="粘贴 DeepSeek API Key（sk-…）" autocomplete="off">
+          <p class="form-hint">Key 只保存在这台电脑的这个浏览器里，不会写进代码、不会上传</p>
+        </div>
+      </details>
+      <div class="ai-goal">
+        <input id="aiGoal" type="text" placeholder="输入学习目标，例如：两周内学会做网页" maxlength="80" autocomplete="off">
+        <button id="aiGen" class="add" type="button">🤖 生成任务</button>
+      </div>
+      <p class="ai-status" id="aiStatus"></p>
+      <div class="ai-result" id="aiResult"></div>
+    </section>
 
     <section class="history" id="history">
       <div class="history-head" id="historyHead">
@@ -687,6 +754,139 @@
     applyOpacity(isNaN(savedOp) ? 93 : savedOp);
     opacityRange.addEventListener("input", function () {
       applyOpacity(parseInt(opacityRange.value, 10));
+    });
+
+    /* ---------- AI 学习规划（调用 DeepSeek API） ---------- */
+    var AI_KEY = "study-tracker-ai-key-v1";
+    var aiKeyEl = document.getElementById("aiKey");
+    var aiGoalEl = document.getElementById("aiGoal");
+    var aiGenBtn = document.getElementById("aiGen");
+    var aiStatusEl = document.getElementById("aiStatus");
+    var aiResultEl = document.getElementById("aiResult");
+
+    // 恢复本机保存的 Key（只存浏览器 localStorage，绝不写进文件）
+    try { aiKeyEl.value = localStorage.getItem(AI_KEY) || ""; } catch (e) {}
+    aiKeyEl.addEventListener("input", function () {
+      try { localStorage.setItem(AI_KEY, aiKeyEl.value.trim()); } catch (e) {}
+    });
+
+    function aiStatus(msg, kind) {
+      aiStatusEl.textContent = msg;
+      aiStatusEl.className = "ai-status" + (kind ? " " + kind : "");
+    }
+
+    function addTaskText(text) {
+      tasks.push({ id: Date.now() + Math.random(), text: text, done: false, due: "" });
+    }
+
+    function extractJsonArray(text) {
+      var start = text.indexOf("[");
+      var end = text.lastIndexOf("]");
+      if (start === -1 || end === -1 || end <= start) return null;
+      try { return JSON.parse(text.slice(start, end + 1)); } catch (e) { return null; }
+    }
+
+    function renderAiTasks(list) {
+      aiResultEl.innerHTML = "";
+      list.forEach(function (t) {
+        var row = document.createElement("div");
+        row.className = "ai-task";
+        var span = document.createElement("span");
+        span.className = "ai-task-text";
+        span.textContent = t;
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ai-add-one";
+        btn.textContent = "加入";
+        btn.addEventListener("click", function () {
+          addTaskText(t);
+          saveTasks();
+          renderAll();
+          btn.textContent = "✓ 已加";
+          btn.disabled = true;
+          aiStatus("已加入：「" + t + "」", "ok");
+        });
+        row.appendChild(span);
+        row.appendChild(btn);
+        aiResultEl.appendChild(row);
+      });
+      var addAll = document.createElement("button");
+      addAll.type = "button";
+      addAll.className = "ai-add-all";
+      addAll.textContent = "全部加入（" + list.length + " 个）";
+      addAll.addEventListener("click", function () {
+        list.forEach(addTaskText);
+        saveTasks();
+        renderAll();
+        aiStatus("已全部加入 " + list.length + " 个任务 ✅", "ok");
+        aiResultEl.innerHTML = "";
+      });
+      aiResultEl.appendChild(addAll);
+    }
+
+    aiGenBtn.addEventListener("click", async function () {
+      var key = aiKeyEl.value.trim();
+      var goal = aiGoalEl.value.trim();
+      if (!key) { aiStatus("先在「🔑 AI 设置」里粘贴你的 DeepSeek API Key", "warn"); return; }
+      if (!goal) { aiStatus("先输入一个学习目标", "warn"); aiGoalEl.focus(); return; }
+
+      aiGenBtn.disabled = true;
+      aiStatus("🤖 正在请 AI 拆解任务…（通常 10 秒内）", "");
+      aiResultEl.innerHTML = "";
+
+      var controller = new AbortController();
+      var timer = setTimeout(function () { controller.abort(); }, 40000);
+
+      try {
+        var resp = await fetch("https://api.deepseek.com/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + key
+          },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              { role: "system", content: "你是学习规划助手。用户给出一个学习目标，请把它拆解成 5 到 8 个具体、可打卡、一天内能完成的小任务。只输出一个 JSON 数组，元素是任务描述字符串，每个不超过 20 个汉字，不要输出任何其他内容或解释。" },
+              { role: "user", content: goal }
+            ],
+            temperature: 0.7,
+            max_tokens: 800
+          }),
+          signal: controller.signal
+        });
+        var data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok) {
+          if (resp.status === 401) { aiStatus("Key 无效或没复制完整，请到 DeepSeek 平台重新复制", "err"); return; }
+          if (resp.status === 402) { aiStatus("账户余额不足，请到 DeepSeek 平台充值", "err"); return; }
+          if (resp.status === 429) { aiStatus("请求太频繁，过一分钟再试", "warn"); return; }
+          var msg = (data.error && data.error.message) ? data.error.message : "未知原因";
+          aiStatus("接口错误（HTTP " + resp.status + "）：" + msg, "err");
+          return;
+        }
+        var content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+        if (!content) { aiStatus("AI 没有返回内容，再试一次？", "warn"); return; }
+        var arr = extractJsonArray(content);
+        if (!arr || !Array.isArray(arr) || arr.length === 0) {
+          aiStatus("没能解析出任务列表，请重试", "err");
+          return;
+        }
+        var clean = arr.filter(function (s) { return typeof s === "string" && s.trim(); })
+          .slice(0, 8).map(function (s) { return s.trim(); });
+        if (clean.length === 0) { aiStatus("没能解析出任务列表，请重试", "err"); return; }
+        renderAiTasks(clean);
+        aiStatus("AI 生成了 " + clean.length + " 个任务，可单独或全部加入", "ok");
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          aiStatus("等待超时（40 秒），网络较慢，请重试", "warn");
+        } else {
+          aiStatus("请求失败（可能是网络或浏览器跨域限制）。把这条消息发给我，我们用备选方案。", "err");
+        }
+      } finally {
+        clearTimeout(timer);
+        aiGenBtn.disabled = false;
+      }
     });
 
     renderAll();
