@@ -266,6 +266,26 @@
   .ai-goal .btn-gh { background: #2f9e86; }
   .ai-goal .btn-gh:hover { background: #26816e; }
 
+  /* ---- 意见反馈入口 ---- */
+  .feedback-box { margin-top: 14px; border-top: 1px solid #f0f2f8; padding-top: 8px; font-size: 0.88rem; }
+  .feedback-box summary { cursor: pointer; color: #8a93a8; padding: 6px 2px; }
+  .feedback-box summary:hover { color: #4f6ef7; }
+  .feedback-body { margin-top: 6px; }
+  #feedbackText {
+    width: 100%; padding: 10px 12px; font-size: 0.92rem;
+    border: 1.5px solid #e2e6f2; border-radius: 12px;
+    background: #fafbfe; outline: none; resize: vertical;
+    font-family: inherit;
+  }
+  #feedbackText:focus { border-color: #4f6ef7; background: #fff; }
+  #feedbackCopy {
+    margin-top: 8px; padding: 9px 16px;
+    border: none; border-radius: 12px;
+    background: #4f6ef7; color: #fff;
+    font-size: 0.88rem; font-weight: 600; cursor: pointer;
+  }
+  #feedbackCopy:hover { background: #3f5ce0; }
+
   /* ---- 小屏适配：防止文字跑出边框、被截断 ---- */
   @media (max-width: 400px) {
     body { padding: 14px 10px; }
@@ -364,6 +384,15 @@
       <ul class="history-list" id="historyList"></ul>
       <div class="history-clear"><button id="historyClear" type="button">清空全部记录</button></div>
     </section>
+
+    <details class="feedback-box" id="feedbackBox">
+      <summary>💬 提意见 / 反馈问题（看到这里就帮我写一句吧）</summary>
+      <div class="feedback-body">
+        <textarea id="feedbackText" rows="3" placeholder="例如：添加任务后，想直接看到本周统计…"></textarea>
+        <button id="feedbackCopy" type="button">复制意见</button>
+        <p class="form-hint" id="feedbackHint">写好后点「复制意见」，把文字发给作者（微信/QQ/邮件）即可</p>
+      </div>
+    </details>
 
     <p class="hint">✅ 任务、完成记录与背景图都保存在本机浏览器里（localStorage），不会上传</p>
   </main>
@@ -1027,6 +1056,34 @@
         syncStatus(syncErrorMessage(e), "err");
       } finally {
         syncDownBtn.disabled = false;
+      }
+    });
+
+    /* ---------- 意见反馈入口 ---------- */
+    var feedbackText = document.getElementById("feedbackText");
+    var feedbackCopy = document.getElementById("feedbackCopy");
+    var feedbackHint = document.getElementById("feedbackHint");
+    feedbackCopy.addEventListener("click", function () {
+      var text = feedbackText.value.trim();
+      if (!text) { feedbackHint.textContent = "先写点什么，再点复制～"; return; }
+      var full = "【打卡器反馈】" + text;
+      function done() {
+        feedbackHint.textContent = "✅ 已复制！把它发给作者（微信/QQ/邮件）就行";
+      }
+      function fallback() {
+        feedbackText.focus();
+        feedbackText.select();
+        try {
+          document.execCommand("copy");
+          done();
+        } catch (e) {
+          feedbackHint.textContent = "复制失败，请手动长按选中这段文字复制";
+        }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(full).then(done, fallback);
+      } else {
+        fallback();
       }
     });
 
