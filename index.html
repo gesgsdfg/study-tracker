@@ -35,7 +35,7 @@
   }
 
   header { text-align: center; margin-bottom: 16px; }
-  h1 { font-size: 1.45rem; font-weight: 700; letter-spacing: 0.02em;color: #1a5cff; }
+  h1 { font-size: 1.45rem; font-weight: 700; letter-spacing: 0.02em;color: #1a5cff;}
   .today { margin-top: 6px; font-size: 0.85rem; color: #8a93a8; }
   .welcome { margin-top: 2px; font-size: 0.92rem; color: #6a7390; }
 
@@ -263,6 +263,8 @@
     background: #fff; color: #4f6ef7; font-size: 0.88rem; font-weight: 600; cursor: pointer;
   }
   .ai-add-all:hover { background: #f3f6ff; }
+  .ai-goal .btn-gh { background: #2f9e86; }
+  .ai-goal .btn-gh:hover { background: #26816e; }
 
   /* ---- 小屏适配：防止文字跑出边框、被截断 ---- */
   @media (max-width: 400px) {
@@ -336,6 +338,22 @@
       </div>
       <p class="ai-status" id="aiStatus"></p>
       <div class="ai-result" id="aiResult"></div>
+    </section>
+
+    <section class="ai-card" id="syncCard">
+      <div class="ai-head">☁️ 云同步（GitHub 仓库当数据库）</div>
+      <details class="ai-settings">
+        <summary>🔑 同步设置（Token 填一次即可，只存本机浏览器）</summary>
+        <div class="ai-settings-body">
+          <input id="ghToken" type="password" placeholder="粘贴 GitHub Token（github_pat_…）" autocomplete="off">
+          <p class="form-hint">Token 只授权 study-tracker 仓库读写；只存本机，不写进代码。同步 = 往仓库的 sync-data.json 提交一次</p>
+        </div>
+      </details>
+      <div class="ai-goal">
+        <button id="syncUp" class="add" type="button">☁️ 上传到云端</button>
+        <button id="syncDown" class="add btn-gh" type="button">☁️ 从云端拉取</button>
+      </div>
+      <p class="ai-status" id="syncStatus"></p>
     </section>
 
     <section class="history" id="history">
@@ -886,6 +904,129 @@
       } finally {
         clearTimeout(timer);
         aiGenBtn.disabled = false;
+      }
+    });
+
+    /* ---------- 云同步（GitHub 仓库当数据库） ---------- */
+    var GH_REPO = "gesgsdfg/study-tracker";
+    var GH_FILE = "sync-data.json";
+    var GH_TOKEN_KEY = "study-tracker-github-token-v1";
+    var ghTokenEl = document.getElementById("ghToken");
+    var syncUpBtn = document.getElementById("syncUp");
+    var syncDownBtn = document.getElementById("syncDown");
+    var syncStatusEl = document.getElementById("syncStatus");
+
+    try { ghTokenEl.value = localStorage.getItem(GH_TOKEN_KEY) || ""; } catch (e) {}
+    ghTokenEl.addEventListener("input", function () {
+      try { localStorage.setItem(GH_TOKEN_KEY, ghTokenEl.value.trim()); } catch (e) {}
+    });
+
+    function syncStatus(msg, kind) {
+      syncStatusEl.textContent = msg;
+      syncStatusEl.className = "ai-status" + (kind ? " " + kind : "");
+    }
+
+    function b64(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+
+    function ghHeaders(token) {
+      return {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      };
+    }
+
+    function syncPayload() {
+      return JSON.stringify({ tasks: tasks, history: history, updatedAt: Date.now() });
+    }
+
+    async function ghRead(token) {
+      var resp = await fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, { headers: ghHeaders(token) });
+      if (resp.status === 404) return null; // 云端还没有这个文件
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) {
+        if (resp.status === 401) throw new Error("TOKEN_INVALID");
+        if (resp.status === 403) throw new Error("FORBIDDEN:" + (data.message || ""));
+        throw new Error("HTTP" + resp.status + ":" + (data.message || ""));
+      }
+      return { sha: data.sha, json: JSON.parse(decodeURIComponent(escape(atob(data.content)))) };
+    }
+
+    async function ghWrite(token, sha) {
+      var body = { message: "打卡器云同步", content: b64(syncPayload()) };
+      if (sha) body.sha = sha;
+      var resp = await fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
+        method: "PUT",
+        headers: Object.assign({ "Content-Type": "application/json" }, ghHeaders(token)),
+        body: JSON.stringify(body)
+      });
+      var data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) {
+        if (resp.status === 401) throw new Error("TOKEN_INVALID");
+        if (resp.status === 403) throw new Error("FORBIDDEN:" + (data.message || ""));
+        if (resp.status === 409) throw new Error("CONFLICT");
+        throw new Error("HTTP" + resp.status + ":" + (data.message || ""));
+      }
+    }
+
+    function mergeIncoming(incoming) {
+      var inTasks = Array.isArray(incoming.tasks) ? incoming.tasks : [];
+      var inHistory = Array.isArray(incoming.history) ? incoming.history : [];
+      var tasksById = {};
+      tasks.concat(inTasks).forEach(function (t) { if (t && t.id !== void 0 && !tasksById[t.id]) tasksById[t.id] = t; });
+      var histById = {};
+      history.concat(inHistory).forEach(function (h) { if (h && h.id !== void 0 && !histById[h.id]) histById[h.id] = h; });
+      tasks = Object.keys(tasksById).map(function (k) { return tasksById[k]; });
+      history = Object.keys(histById).map(function (k) { return histById[k]; });
+      saveTasks();
+      saveHistory();
+      renderAll();
+      return { tasks: tasks.length, history: history.length };
+    }
+
+    function syncErrorMessage(e) {
+      var msg = String(e && e.message ? e.message : e);
+      if (msg === "TOKEN_INVALID") return "Token 无效或已过期：重新生成一个（github_pat_…），或检查是否复制完整";
+      if (msg.indexOf("FORBIDDEN") === 0) return "权限不足：检查 Token 是否只勾了 study-tracker 仓库、Contents 是否选了 Read and write（" + msg.slice(9) + "）";
+      if (msg === "CONFLICT") return "云端刚被改过（有冲突），请再点一次上传";
+      if (msg.indexOf("HTTP 404") === 0) return "仓库或文件路径不对，检查仓库名是否 gesgsdfg/study-tracker";
+      if (msg.indexOf("HTTP 429") === 0) return "请求太频繁（限流），等几分钟再试";
+      if (msg.indexOf("Failed to fetch") >= 0 || msg.indexOf("fetch") >= 0 || msg.indexOf("NetworkError") >= 0) return "网络错误：检查网络后重试";
+      return "同步失败：" + msg;
+    }
+
+    syncUpBtn.addEventListener("click", async function () {
+      var token = ghTokenEl.value.trim();
+      if (!token) { syncStatus("先在「同步设置」里粘贴你的 GitHub Token", "warn"); return; }
+      syncUpBtn.disabled = true;
+      syncStatus("正在上传到云端…", "");
+      try {
+        var remote = await ghRead(token);
+        await ghWrite(token, remote ? remote.sha : void 0);
+        syncStatus("已上传：" + tasks.length + " 个任务、" + history.length + " 条记录 → 云端", "ok");
+      } catch (e) {
+        syncStatus(syncErrorMessage(e), "err");
+      } finally {
+        syncUpBtn.disabled = false;
+      }
+    });
+
+    syncDownBtn.addEventListener("click", async function () {
+      var token = ghTokenEl.value.trim();
+      if (!token) { syncStatus("先在「同步设置」里粘贴你的 GitHub Token", "warn"); return; }
+      syncDownBtn.disabled = true;
+      syncStatus("正在从云端拉取…", "");
+      try {
+        var remote = await ghRead(token);
+        if (!remote) { syncStatus("云端还没有数据：先在电脑上点一次「上传到云端」", "warn"); return; }
+        var m = mergeIncoming(remote.json);
+        syncStatus("拉取成功：合并后共 " + m.tasks + " 个任务、" + m.history + " 条记录", "ok");
+      } catch (e) {
+        syncStatus(syncErrorMessage(e), "err");
+      } finally {
+        syncDownBtn.disabled = false;
       }
     });
 
