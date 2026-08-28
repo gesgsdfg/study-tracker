@@ -22,7 +22,21 @@
     -webkit-tap-highlight-color: transparent;
   }
   :root { --card-opacity: 0.93; }
-  body.has-bg .card { background: rgba(255, 255, 255, var(--card-opacity)); }
+  body.has-bg::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 0;
+    pointer-events: none;
+  }
+  body.has-bg .card {
+    position: relative;
+    z-index: 1;
+    background: rgba(255, 255, 255, var(--card-opacity));
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
 
   .card {
     margin: auto 0;
@@ -285,6 +299,26 @@
     font-size: 0.88rem; font-weight: 600; cursor: pointer;
   }
   #feedbackCopy:hover { background: #3f5ce0; }
+  .feedback-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  #feedbackSubmit {
+    padding: 9px 16px;
+    border: none; border-radius: 12px;
+    background: #2f9e86; color: #fff;
+    font-size: 0.88rem; font-weight: 600; cursor: pointer;
+  }
+  #feedbackSubmit:hover { background: #26816e; }
+  .feedback-records { margin-top: 10px; }
+  .feedback-records .fr-head {
+    font-size: 0.8rem; font-weight: 700; color: #6a7390; padding: 6px 2px 4px;
+  }
+  .feedback-records li {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 4px; border-bottom: 1px dashed #eef0f6;
+    font-size: 0.85rem; color: #4a5060;
+  }
+  .feedback-records .fr-text { flex: 1; min-width: 0; word-break: break-all; }
+  .feedback-records .fr-time { flex: none; font-size: 0.72rem; color: #a7aec0; white-space: nowrap; }
+  .feedback-records .del { width: 26px; height: 26px; font-size: 0.85rem; }
 
   /* ---- 小屏适配：防止文字跑出边框、被截断 ---- */
   @media (max-width: 400px) {
@@ -339,7 +373,7 @@
 
     <div class="bg-ctrl" id="bgCtrl">
       <label for="opacityRange">卡片透明度</label>
-      <input id="opacityRange" type="range" min="25" max="100" step="1" value="93">
+      <input id="opacityRange" type="range" min="45" max="100" step="1" value="93">
       <span class="op-val" id="opVal">93%</span>
     </div>
 
@@ -389,8 +423,12 @@
       <summary>💬 提意见 / 反馈问题（看到这里就帮我写一句吧）</summary>
       <div class="feedback-body">
         <textarea id="feedbackText" rows="3" placeholder="例如：添加任务后，想直接看到本周统计…"></textarea>
-        <button id="feedbackCopy" type="button">复制意见</button>
-        <p class="form-hint" id="feedbackHint">写好后点「复制意见」，把文字发给作者（微信/QQ/邮件）即可</p>
+        <div class="feedback-actions">
+          <button id="feedbackSubmit" type="button">提交并保存</button>
+          <button id="feedbackCopy" type="button">复制意见</button>
+        </div>
+        <p class="form-hint" id="feedbackHint">「提交并保存」存进本机并随云同步上传；「复制意见」方便直接发给作者</p>
+        <div class="feedback-records" id="feedbackRecords"></div>
       </div>
     </details>
 
@@ -790,7 +828,7 @@
 
     /* ---------- 卡片透明度 ---------- */
     function applyOpacity(v) {
-      v = Math.max(25, Math.min(100, v));
+      v = Math.max(45, Math.min(100, v));
       document.documentElement.style.setProperty("--card-opacity", String(v / 100));
       opacityRange.value = String(v);
       opValEl.textContent = v + "%";
@@ -968,7 +1006,7 @@
     }
 
     function syncPayload() {
-      return JSON.stringify({ tasks: tasks, history: history, updatedAt: Date.now() });
+      return JSON.stringify({ tasks: tasks, history: history, feedback: feedback, updatedAt: Date.now() });
     }
 
     async function ghRead(token) {
@@ -1003,16 +1041,22 @@
     function mergeIncoming(incoming) {
       var inTasks = Array.isArray(incoming.tasks) ? incoming.tasks : [];
       var inHistory = Array.isArray(incoming.history) ? incoming.history : [];
+      var inFeedback = Array.isArray(incoming.feedback) ? incoming.feedback : [];
       var tasksById = {};
       tasks.concat(inTasks).forEach(function (t) { if (t && t.id !== void 0 && !tasksById[t.id]) tasksById[t.id] = t; });
       var histById = {};
       history.concat(inHistory).forEach(function (h) { if (h && h.id !== void 0 && !histById[h.id]) histById[h.id] = h; });
+      var fbById = {};
+      feedback.concat(inFeedback).forEach(function (f) { if (f && f.id !== void 0 && !fbById[f.id]) fbById[f.id] = f; });
       tasks = Object.keys(tasksById).map(function (k) { return tasksById[k]; });
       history = Object.keys(histById).map(function (k) { return histById[k]; });
+      feedback = Object.keys(fbById).map(function (k) { return fbById[k]; });
       saveTasks();
       saveHistory();
+      saveFeedback();
       renderAll();
-      return { tasks: tasks.length, history: history.length };
+      renderFeedbackRecords();
+      return { tasks: tasks.length, history: history.length, feedback: feedback.length };
     }
 
     function syncErrorMessage(e) {
@@ -1059,10 +1103,63 @@
       }
     });
 
-    /* ---------- 意见反馈入口 ---------- */
+    /* ---------- 意见反馈入口（提交保存 + 记录 + 云同步） ---------- */
+    var FEEDBACK_KEY = "study-tracker-feedback-v1";
+    var feedback = readJSON(FEEDBACK_KEY);
     var feedbackText = document.getElementById("feedbackText");
     var feedbackCopy = document.getElementById("feedbackCopy");
+    var feedbackSubmit = document.getElementById("feedbackSubmit");
     var feedbackHint = document.getElementById("feedbackHint");
+    var feedbackRecordsEl = document.getElementById("feedbackRecords");
+
+    function saveFeedback() { localStorage.setItem(FEEDBACK_KEY, JSON.stringify(feedback)); }
+
+    function renderFeedbackRecords() {
+      feedbackRecordsEl.innerHTML = "";
+      if (feedback.length === 0) return;
+      var head = document.createElement("div");
+      head.className = "fr-head";
+      head.textContent = "📋 已保存的意见（" + feedback.length + " 条，随云同步上传）";
+      feedbackRecordsEl.appendChild(head);
+      var ul = document.createElement("ul");
+      ul.style.listStyle = "none";
+      feedback.slice().sort(function (a, b) { return b.at - a.at; }).forEach(function (rec) {
+        var li = document.createElement("li");
+        var text = document.createElement("span");
+        text.className = "fr-text";
+        text.textContent = rec.text;
+        var time = document.createElement("span");
+        time.className = "fr-time";
+        time.textContent = new Date(rec.at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }) +
+          " " + new Date(rec.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+        var del = document.createElement("button");
+        del.type = "button";
+        del.className = "del";
+        del.textContent = "✕";
+        del.title = "删除这条意见";
+        del.addEventListener("click", function () {
+          feedback = feedback.filter(function (f) { return f.id !== rec.id; });
+          saveFeedback();
+          renderFeedbackRecords();
+        });
+        li.appendChild(text);
+        li.appendChild(time);
+        li.appendChild(del);
+        ul.appendChild(li);
+      });
+      feedbackRecordsEl.appendChild(ul);
+    }
+
+    feedbackSubmit.addEventListener("click", function () {
+      var text = feedbackText.value.trim();
+      if (!text) { feedbackHint.textContent = "先写点什么再提交～"; return; }
+      feedback.push({ id: Date.now() + Math.random(), text: text, at: Date.now() });
+      saveFeedback();
+      renderFeedbackRecords();
+      feedbackText.value = "";
+      feedbackHint.textContent = "✅ 已保存（共 " + feedback.length + " 条）。点「☁️ 上传到云端」会一起带走";
+    });
+
     feedbackCopy.addEventListener("click", function () {
       var text = feedbackText.value.trim();
       if (!text) { feedbackHint.textContent = "先写点什么，再点复制～"; return; }
@@ -1086,6 +1183,8 @@
         fallback();
       }
     });
+
+    renderFeedbackRecords();
 
     renderAll();
   })();
