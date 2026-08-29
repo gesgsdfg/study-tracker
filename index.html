@@ -246,6 +246,12 @@
     background: #fafbfe; outline: none;
   }
   #aiKey:focus { border-color: #4f6ef7; background: #fff; }
+  #aiProxy {
+    margin-top: 8px; width: 100%; padding: 11px 12px; font-size: 0.92rem;
+    border: 1.5px solid #e2e6f2; border-radius: 12px;
+    background: #fafbfe; outline: none;
+  }
+  #aiProxy:focus { border-color: #4f6ef7; background: #fff; }
   .ai-goal { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 6px; }
   .ai-goal input {
     flex: 1 1 55%; min-width: 0;
@@ -380,10 +386,11 @@
     <section class="ai-card" id="aiCard">
       <div class="ai-head">🤖 AI 学习规划</div>
       <details class="ai-settings" id="aiSettings">
-        <summary>🔑 AI 设置（Key 填一次即可，只存本机浏览器）</summary>
+        <summary>🔑 AI 设置（填一次即可，只存本机浏览器）</summary>
         <div class="ai-settings-body">
-          <input id="aiKey" type="password" placeholder="粘贴 DeepSeek API Key（sk-…）" autocomplete="off">
-          <p class="form-hint">Key 只保存在这台电脑的这个浏览器里，不会写进代码、不会上传</p>
+          <input id="aiKey" type="password" placeholder="DeepSeek API Key（直连模式用，sk-…）" autocomplete="off">
+          <input id="aiProxy" type="text" placeholder="中转站地址（推荐，https://…workers.dev）" autocomplete="off">
+          <p class="form-hint">填了中转站地址就不用填 Key；都填时优先走中转站。所有内容只存本机浏览器</p>
         </div>
       </details>
       <div class="ai-goal">
@@ -843,7 +850,9 @@
 
     /* ---------- AI 学习规划（调用 DeepSeek API） ---------- */
     var AI_KEY = "study-tracker-ai-key-v1";
+    var AI_PROXY_KEY = "study-tracker-ai-proxy-v1";
     var aiKeyEl = document.getElementById("aiKey");
+    var aiProxyEl = document.getElementById("aiProxy");
     var aiGoalEl = document.getElementById("aiGoal");
     var aiGenBtn = document.getElementById("aiGen");
     var aiStatusEl = document.getElementById("aiStatus");
@@ -853,6 +862,10 @@
     try { aiKeyEl.value = localStorage.getItem(AI_KEY) || ""; } catch (e) {}
     aiKeyEl.addEventListener("input", function () {
       try { localStorage.setItem(AI_KEY, aiKeyEl.value.trim()); } catch (e) {}
+    });
+    try { aiProxyEl.value = localStorage.getItem(AI_PROXY_KEY) || ""; } catch (e) {}
+    aiProxyEl.addEventListener("input", function () {
+      try { localStorage.setItem(AI_PROXY_KEY, aiProxyEl.value.trim()); } catch (e) {}
     });
 
     function aiStatus(msg, kind) {
@@ -910,44 +923,62 @@
     }
 
     aiGenBtn.addEventListener("click", async function () {
+      var proxyUrl = aiProxyEl.value.trim();
       var key = aiKeyEl.value.trim();
       var goal = aiGoalEl.value.trim();
-      if (!key) { aiStatus("先在「🔑 AI 设置」里粘贴你的 DeepSeek API Key", "warn"); return; }
+      if (!proxyUrl && !key) { aiStatus("先在「🔑 AI 设置」里填中转站地址（或 DeepSeek Key）", "warn"); return; }
       if (!goal) { aiStatus("先输入一个学习目标", "warn"); aiGoalEl.focus(); return; }
 
       aiGenBtn.disabled = true;
-      aiStatus("🤖 正在请 AI 拆解任务…（通常 10 秒内）", "");
+      aiStatus(proxyUrl ? "🤖 正在通过中转站请 AI 拆解任务…" : "🤖 正在请 AI 拆解任务…（通常 10 秒内）", "");
       aiResultEl.innerHTML = "";
 
       var controller = new AbortController();
       var timer = setTimeout(function () { controller.abort(); }, 40000);
 
       try {
-        var resp = await fetch("https://api.deepseek.com/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + key
-          },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-              { role: "system", content: "你是学习规划助手。用户给出一个学习目标，请把它拆解成 5 到 8 个具体、可打卡、一天内能完成的小任务。只输出一个 JSON 数组，元素是任务描述字符串，每个不超过 20 个汉字，不要输出任何其他内容或解释。" },
-              { role: "user", content: goal }
-            ],
-            temperature: 0.7,
-            max_tokens: 800
-          }),
-          signal: controller.signal
-        });
+        var resp;
+        if (proxyUrl) {
+          // 中转站模式：钥匙在中转站里，网页只带目标
+          resp = await fetch(proxyUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ goal: goal }),
+            signal: controller.signal
+          });
+        } else {
+          // 直连模式：需要 Key
+          resp = await fetch("https://api.deepseek.com/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + key
+            },
+            body: JSON.stringify({
+              model: "deepseek-chat",
+              messages: [
+                { role: "system", content: "你是学习规划助手。用户给出一个学习目标，请把它拆解成 5 到 8 个具体、可打卡、一天内能完成的小任务。只输出一个 JSON 数组，元素是任务描述字符串，每个不超过 20 个汉字，不要输出任何其他内容或解释。" },
+                { role: "user", content: goal }
+              ],
+              temperature: 0.7,
+              max_tokens: 800
+            }),
+            signal: controller.signal
+          });
+        }
         var data = {};
         try { data = await resp.json(); } catch (e) {}
         if (!resp.ok) {
-          if (resp.status === 401) { aiStatus("Key 无效或没复制完整，请到 DeepSeek 平台重新复制", "err"); return; }
-          if (resp.status === 402) { aiStatus("账户余额不足，请到 DeepSeek 平台充值", "err"); return; }
-          if (resp.status === 429) { aiStatus("请求太频繁，过一分钟再试", "warn"); return; }
-          var msg = (data.error && data.error.message) ? data.error.message : "未知原因";
-          aiStatus("接口错误（HTTP " + resp.status + "）：" + msg, "err");
+          if (proxyUrl) {
+            var pmsg = (data && data.error) ? data.error : ("HTTP " + resp.status);
+            aiStatus("中转站返回错误：" + pmsg, "err");
+          } else {
+            if (resp.status === 401) { aiStatus("Key 无效或没复制完整，请到 DeepSeek 平台重新复制", "err"); return; }
+            if (resp.status === 402) { aiStatus("账户余额不足，请到 DeepSeek 平台充值", "err"); return; }
+            if (resp.status === 429) { aiStatus("请求太频繁，过一分钟再试", "warn"); return; }
+            var msg = (data.error && data.error.message) ? data.error.message : "未知原因";
+            aiStatus("接口错误（HTTP " + resp.status + "）：" + msg, "err");
+          }
           return;
         }
         var content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
