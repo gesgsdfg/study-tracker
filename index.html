@@ -970,8 +970,17 @@
         try { data = await resp.json(); } catch (e) {}
         if (!resp.ok) {
           if (proxyUrl) {
-            var pmsg = (data && data.error) ? data.error : ("HTTP " + resp.status);
-            aiStatus("中转站返回错误：" + pmsg, "err");
+            var perr;
+            if (data && data.error) {
+              perr = typeof data.error === "string" ? data.error : (data.error.message || "未知错误");
+            } else {
+              perr = "HTTP " + resp.status;
+            }
+            var hint = "";
+            if (resp.status === 401) hint = "（中转站里的 DeepSeek Key 无效或没填）";
+            if (resp.status === 402) hint = "（DeepSeek 账户余额不足）";
+            if (resp.status === 429) hint = "（请求太频繁，稍后再试）";
+            aiStatus("中转站返回错误：" + perr + hint, "err");
           } else {
             if (resp.status === 401) { aiStatus("Key 无效或没复制完整，请到 DeepSeek 平台重新复制", "err"); return; }
             if (resp.status === 402) { aiStatus("账户余额不足，请到 DeepSeek 平台充值", "err"); return; }
